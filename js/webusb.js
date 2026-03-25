@@ -114,7 +114,32 @@ class WebUSBDevice {
         
         // Protected interface classes that cannot be claimed
         const protectedClasses = [0x01, 0x02, 0x03, 0x08, 0x0A, 0x0B, 0x0E, 0x10];
-        
+
+        // ── J-Link OB (Calliope mini 2.x) ──────────────────────────────────────────
+        // Interface 2 (vendor class 0xFF/0xFF/0xFF) is the J-Link command interface.
+        // It accepts SEGGER's J-Link MSD protocol (0xED, 0x1C …).
+        // Endpoints vary by hardware revision:
+        //   v2.0: EP 3 IN / EP 2 OUT
+        //   v2.1: EP 5 IN / EP 4 OUT
+        // (detected dynamically from the interface descriptor)
+        if (this.device.vendorId === 0x1366) {
+            for (const config of this.device.configurations) {
+                for (const iface of config.interfaces) {
+                    const alt = iface.alternates[0];
+                    log(`Interface ${iface.interfaceNumber}: class=${alt.interfaceClass}, subclass=${alt.interfaceSubclass}, protocol=${alt.interfaceProtocol}, endpoints=${alt.endpoints.length}`);
+                    if (alt.interfaceClass === 0xFF && alt.interfaceSubclass === 0xFF &&
+                        alt.endpoints.length === 2 &&
+                        alt.endpoints.every(e => e.type === 'bulk')) {
+                        log(`  J-Link: selecting vendor interface ${iface.interfaceNumber} (J-Link MSD protocol)`);
+                        return iface;
+                    }
+                }
+            }
+            log('J-Link: vendor interface not found');
+            return null;
+        }
+        // ─────────────────────────────────────────────────────────────────────────────
+
         let candidates = [];
         
         for (const config of this.device.configurations) {
@@ -167,6 +192,21 @@ class WebUSBDevice {
         candidates.sort((a, b) => b.priority - a.priority);
         log(`Selected interface ${candidates[0].iface.interfaceNumber}`);
         return candidates[0].iface;
+    }
+
+    /**
+     * Send a raw J-Link protocol command and optionally receive a response.
+     * Unlike sendPacket(), this does NOT pad to 64 bytes and supports large
+     * payloads (4KB MSD image chunks). Used exclusively for J-Link MSD flashing.
+     */
+    async sendJLinkCommand(cmd, expectResponse = true) {
+        if (!this.connected) throw new Error('Device not connected');
+        const result = await this.device.transferOut(this.endpoint.out, cmd);
+        if (result.status !== 'ok') throw new Error(`J-Link send failed: ${result.status}`);
+        if (!expectResponse) return new Uint8Array(0);
+        const resp = await this.device.transferIn(this.endpoint.in, 64);
+        if (resp.status !== 'ok') throw new Error(`J-Link receive failed: ${resp.status}`);
+        return new Uint8Array(resp.data.buffer, resp.data.byteOffset, resp.data.byteLength);
     }
 
     /**
@@ -326,6 +366,15 @@ class WebUSBDevice {
      */
     isConnected() {
         return this.connected && this.device !== null;
+    }
+
+    /**
+     * Returns true when the connected device uses a Segger J-Link OB interface
+     * (Calliope mini 2.0 / 2.1).  These devices do not support CMSIS-DAP and
+     * must always be flashed via the DAPLink full-flash commands.
+     */
+    isJLink() {
+        return this.device && this.device.vendorId === 0x1366;
     }
 
     /**

@@ -210,8 +210,10 @@ class FlashController {
             if (this.onProgress) this.onProgress(5, 'Computing device checksums...');
             const checksums = await flasher.getFlashChecksums();
 
-            // 5. Filter to changed pages only
-            const changedPages = onlyChangedPages(newPages, checksums, flasher.pageSize);
+            // 5. Filter to changed pages only; exclude UICR/peripheral space (>= 0x10000000)
+            //    which can never be written by flashPageBIN but would otherwise skew the count.
+            const changedPages = onlyChangedPages(newPages, checksums, flasher.pageSize)
+                .filter(b => b.address < 0x10000000);
             const threshold    = (newPages.length / 2) | 0;
             log(`Pages: ${changedPages.length} changed / ${newPages.length} total (threshold: ${threshold})`);
 
@@ -257,6 +259,92 @@ class FlashController {
      * Main flash entry point
      * Chooses between full and partial flash
      */
+    /**
+     * Full flash for Calliope mini 2.x (J-Link OB).
+     *
+     * The J-Link OB does NOT speak DAPLink vendor commands (0x8A/0x8C/0x8B/0x89).
+     * It DOES support CMSIS-DAP on the same vendor-class bulk interface, so we
+     * use dapjs to write every firmware page directly — same mechanism as
+     * quickFlashPages but without the checksum comparison (always write all pages).
+     *
+     * clearCommands() is skipped: J-Link has no stale pending transfers from
+     * previous DAPLink sessions, and the speculative DAP_Info probes go unanswered
+     * by J-Link causing the blocking transferIn to hang indefinitely.
+     */
+    /**
+     * Flash via SEGGER J-Link MSD protocol (Calliope mini 2.x).
+     *
+     * J-Link Interface 2 (vendor 0xFF/0xFF/0xFF) accepts these commands:
+     *   0xED                                  GET_CAPS_EX     → 32 bytes
+     *   0x1C 0x00                             GET_PROBE_INFO  → 4 bytes (caps)
+     *   0x1C 0x05 size_lo size_hi 0x00 0x00 [chunk]  WRITE_CHUNK   → no response
+     *   0x1C 0x06                             WRITE_END       → 4 bytes (0=ok)
+     *
+     * The J-Link probe receives the raw Intel HEX text in 4KB chunks, parses it
+     * internally, erases, programs, and verifies the target flash itself.
+     */
+    async jlinkFlash(hexContent, progressCallback) {
+        log('J-Link MSD flash starting...');
+        this.aborted = false;
+        if (progressCallback) this.onProgress = progressCallback;
+
+        const hexBytes = new TextEncoder().encode(hexContent);
+        const CHUNK_SIZE = 4096;
+
+        // Step 1: GET_CAPS_EX (0xED) — probe must respond with 32 bytes
+        if (this.onProgress) this.onProgress(2, 'Connecting to J-Link probe...');
+        const capsResp = await this.usb.sendJLinkCommand(new Uint8Array([0xED]));
+        if (capsResp.length !== 32)
+            throw new Error(`J-Link GET_CAPS_EX: expected 32 bytes, got ${capsResp.length}`);
+        log(`J-Link: GET_CAPS_EX OK`);
+
+        // Step 2: GET_PROBE_INFO(0) — bit 0 must be set for MSD flash support
+        const probeResp = await this.usb.sendJLinkCommand(new Uint8Array([0x1C, 0x00]));
+        if (probeResp.length !== 4)
+            throw new Error(`J-Link GET_PROBE_INFO: expected 4 bytes, got ${probeResp.length}`);
+        const caps = probeResp[0] | (probeResp[1] << 8) | (probeResp[2] << 16) | (probeResp[3] << 24);
+        if ((caps & 0x01) === 0)
+            throw new Error('J-Link probe does not support MSD flashing (bit 0 not set)');
+        log(`J-Link: probe caps 0x${caps.toString(16)} — MSD supported`);
+
+        // Step 3: WRITE_MSD_IMG_CHUNK (0x1C 0x05) — send hex in 4KB chunks, no response
+        const totalChunks = Math.ceil(hexBytes.length / CHUNK_SIZE);
+        log(`J-Link: sending ${hexBytes.length} bytes in ${totalChunks} × 4KB chunks...`);
+        if (this.onProgress) this.onProgress(5, `Writing ${totalChunks} chunk(s)...`);
+
+        for (let i = 0; i < totalChunks; i++) {
+            if (this.aborted) throw new Error('Flash aborted by user');
+            const chunk = hexBytes.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
+            const pkt = new Uint8Array(6 + chunk.length);
+            pkt[0] = 0x1C; pkt[1] = 0x05;
+            pkt[2] = chunk.length & 0xFF;
+            pkt[3] = (chunk.length >> 8) & 0xFF;
+            // bytes 4-5 reserved = 0
+            pkt.set(chunk, 6);
+            await this.usb.sendJLinkCommand(pkt, /* expectResponse= */ false);
+            if (this.onProgress)
+                this.onProgress(5 + ((i + 1) / totalChunks) * 88, `Chunk ${i + 1}/${totalChunks}`);
+        }
+
+        // Step 4: WRITE_MSD_IMG_END (0x1C 0x06) — finalize; 0 = success
+        log('J-Link: finalizing...');
+        if (this.onProgress) this.onProgress(95, 'Finalizing...');
+        const finalResp = await this.usb.sendJLinkCommand(new Uint8Array([0x1C, 0x06]));
+        if (finalResp.length !== 4)
+            throw new Error(`J-Link finalize: expected 4 bytes, got ${finalResp.length}`);
+        const result = finalResp[0] | (finalResp[1] << 8) | (finalResp[2] << 16) | (finalResp[3] << 24);
+        if (result !== 0) {
+            const detail = result === 0x55
+                ? 'invalid/incompatible hex file (must target nRF51822 / Calliope mini 2)'
+                : `error code 0x${(result >>> 0).toString(16)}`;
+            throw new Error(`J-Link flash failed: ${detail}`);
+        }
+
+        log('J-Link: flash complete!');
+        if (this.onProgress) this.onProgress(100, 'Done');
+        return { success: true, method: 'jlink-msd', pagesChanged: totalChunks, pagesTotal: totalChunks };
+    }
+
     async flash(hexContent, options = {}) {
         const {
             usePartialFlash = true,
@@ -271,12 +359,16 @@ class FlashController {
         }
 
         log(`Flashing ${formatBytes(validation.totalSize)}...`);
-        log(`Partial flash: ${usePartialFlash ? 'enabled' : 'disabled'}`);
 
+        // ── Strand A: Calliope mini 2.x — J-Link MSD protocol ────────────────────
+        if (this.usb.isJLink()) {
+            return await this.jlinkFlash(hexContent, progressCallback);
+        }
+
+        // ── Strand B: Calliope mini 3 — DAPLink, partial or full flash ────────────
+        log(`Partial flash: ${usePartialFlash ? 'enabled' : 'disabled'}`);
         let result;
-        
         if (usePartialFlash) {
-            // Try partial flash first
             try {
                 result = await this.partialFlash(hexContent, progressCallback);
             } catch (error) {
@@ -284,13 +376,11 @@ class FlashController {
                 result = await this.fullFlash(hexContent, progressCallback);
             }
         } else {
-            // Use full flash
             result = await this.fullFlash(hexContent, progressCallback);
         }
 
         if (verifyAfterFlash) {
             log('Verification not yet implemented');
-            // TODO: Implement flash verification
         }
 
         return result;

@@ -204,11 +204,12 @@ async function connectDevice() {
 
         // Get firmware version
         flashController = createFlashController(usbDevice);
-        
+
         // Skip version check - it can interfere with subsequent commands
         elements.firmwareVersion.textContent = 'Ready';
         log('Device ready for flashing');
 
+        updatePartialFlashUI();
         showStatus('Device connected successfully');
         updateFlashButton();
 
@@ -293,6 +294,22 @@ function updateProgress(percent, status) {
 }
 
 /**
+ * Enable or disable the partial-flash checkbox depending on the connected device.
+ * J-Link OB (Calliope mini 2.x) does not support CMSIS-DAP partial flash.
+ */
+function updatePartialFlashUI() {
+    if (usbDevice && usbDevice.isJLink()) {
+        elements.partialFlash.checked = false;
+        elements.partialFlash.disabled = true;
+        elements.partialFlash.title = 'Calliope mini 2.x: always full flash via J-Link MSD protocol';
+        log('Partial flash disabled: J-Link MSD always flashes all pages');
+    } else {
+        elements.partialFlash.disabled = false;
+        elements.partialFlash.title = '';
+    }
+}
+
+/**
  * Connection changed callback
  */
 function onConnectionChanged(connected) {
@@ -306,6 +323,9 @@ function onConnectionChanged(connected) {
         elements.deviceStatus.classList.remove('connected');
         elements.firmwareVersion.textContent = '-';
         flashController = null;
+        // Re-enable partial flash checkbox so it's ready for the next device
+        elements.partialFlash.disabled = false;
+        elements.partialFlash.title = '';
     }
     updateFlashButton();
 }
@@ -372,6 +392,7 @@ async function onDeviceAppeared(device) {
 
         flashController = createFlashController(usbDevice);
         elements.firmwareVersion.textContent = 'Ready';
+        updatePartialFlashUI();
         updateFlashButton();
 
         if (autoFlashEnabled && hexFileContent) {

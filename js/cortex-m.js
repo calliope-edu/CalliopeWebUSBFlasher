@@ -120,11 +120,16 @@ class DAPFlasher {
 
     // -----------------------------------------------------------------------
     // Initialise, halt, reset (halt=true), and read FICR.
-    // Mirrors the reflashAsync() preamble in flash.ts:
-    //   clearCommandsAsync → cortexM.init → cortexM.reset(true) → readPageSize
+    // skipFlush=true: skip clearCommands() — used for J-Link OB devices which
+    // do not respond to the speculative DAP_Info probes (they have no stale
+    // pending transfers from previous DAPLink sessions).
     // -----------------------------------------------------------------------
-    async init() {
-        await this.clearCommands();
+    async init(skipFlush = false) {
+        if (!skipFlush) {
+            await this.clearCommands();
+        } else {
+            log('DAPFlasher: skipping USB flush (J-Link device)');
+        }
 
         log('DAPFlasher: cortexM.init()...');
         await this._cortexM.init();
@@ -152,7 +157,7 @@ class DAPFlasher {
         const u8 = await this._cortexM.memory.readBlock(0x10001014, 1, this.pageSize);
         const v = new Uint32Array(u8.buffer);
         const uicr = v[0] & 0xFF;
-        log(`DAPFlasher: UICR=0x${uicr.toString(16)} (raw=0x${v[0].toString(16)})`);
+        log(`DAPFlasher: UICR=0x${uicr.toString(16)} (raw=0x${v[0].toString(16).padStart(8, '0')})`);
         return uicr;
     }
 
@@ -221,7 +226,6 @@ class DAPFlasher {
             }
 
             log(`DAPFlasher: writing page ${i + 1}/${changedPages.length} at 0x${b.address.toString(16)}`);
-            if (progressCallback) progressCallback(i / changedPages.length);
 
             // Alternate between two staging buffers (MakeCode double-buffering pattern)
             const thisAddr = (i & 1) ? CM_DATA_ADDR             : CM_DATA_ADDR + pageSize;
@@ -254,6 +258,7 @@ class DAPFlasher {
             }
 
             await this._cortexM.waitForHalt(500);
+            if (progressCallback) progressCallback((i + 1) / changedPages.length);
         }
 
         log('DAPFlasher: quick flash done, resetting device...');
