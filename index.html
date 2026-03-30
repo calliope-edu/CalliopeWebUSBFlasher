@@ -3,15 +3,18 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Calliope mini WebUSB Flasher</title>
-    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔌</text></svg>">
+    <title>WebUSB Flasher</title>
+    <link rel="icon" href="Calliope Logo dunkel.svg">
     <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
     <div class="container">
         <header>
-            <h1>🔌 Calliope mini WebUSB Flasher</h1>
-            <p class="subtitle">Flash hex files directly to your Calliope mini using WebUSB</p>
+            <div class="header-title">
+                <img src="Calliope Logo dunkel.svg" alt="Calliope" class="header-logo">
+                <h1>WebUSB Flasher</h1>
+            </div>
+            <p class="subtitle">Flash hex files directly to your Calliope mini V1/V2/V3 using WebUSB</p>
         </header>
 
         <main>
@@ -24,12 +27,12 @@
                             <path fill="currentColor" d="M9,16V10H5L12,3L19,10H15V16H9M5,20V18H19V20H5Z"/>
                         </svg>
                         <p class="drop-text">Drop HEX file here or <button type="button" id="selectFile" class="link-button">select file</button></p>
-                        <p class="file-info" id="fileInfo"></p>
                     </div>
                 </div>
                 <button type="button" id="loadStartProgramBtn" class="btn btn-secondary btn-load-start">
                     Load Start Program
                 </button>
+                <p id="hexToFlashLabel" class="hex-label"></p>
             </section>
 
             <!-- Device Connection Section -->
@@ -95,7 +98,7 @@
                     <span>Verify after flashing</span>
                 </label>
                 <label class="checkbox-label">
-                    <input type="checkbox" id="autoFlash">
+                    <input type="checkbox" id="autoFlash" checked>
                     <span>Auto-flash on connect (no button click needed)</span>
                 </label>
             </section>
@@ -114,7 +117,7 @@
                     <li>Firmware version 0249 or higher is required</li>
                     <li>Try a different USB cable if connection fails</li>
                     <li>On Windows, install the device driver if needed</li>
-                    <li>Close other programs that might use the device (e.g., Arduino IDE)</li>
+                    <li>Close other Apps that might use the device (e.g., MakeCode, Python, Arduino IDE)</li>
                 </ul>
             </details>
         </footer>

@@ -31,7 +31,7 @@ document.addEventListener('DOMContentLoaded', () => {
         dropZone: document.getElementById('dropZone'),
         selectFile: document.getElementById('selectFile'),
         loadStartProgramBtn: document.getElementById('loadStartProgramBtn'),
-        fileInfo: document.getElementById('fileInfo'),
+        hexLabel: document.getElementById('hexToFlashLabel'),
         connectBtn: document.getElementById('connectBtn'),
         flashBtn: document.getElementById('flashBtn'),
         cancelBtn: document.getElementById('cancelBtn'),
@@ -96,12 +96,16 @@ function setupEventListeners() {
     document.addEventListener('drop',     (e) => { e.preventDefault(); });
 
     // Load Start Program button
-    elements.loadStartProgramBtn.addEventListener('click', () => {
-        if (!usbDevice || !usbDevice.isConnected()) {
-            showError('Connect a device first to load the matching start program.');
-            return;
+    elements.loadStartProgramBtn.addEventListener('click', async () => {
+        hexIsStartProgram = true;
+        if (usbDevice && usbDevice.isConnected()) {
+            await loadHexForDevice();
+        } else {
+            // No device yet — show the default placeholder; actual load happens on connect
+            hexFileContent = null;
+            elements.hexLabel.textContent = 'Demov3.hex';
+            updateFlashButton();
         }
-        loadHexForDevice();
     });
 
     // Device connection
@@ -140,10 +144,7 @@ async function loadHexFile(file) {
         hexFileContent = text;
         hexIsStartProgram = false;
         const info = getHexFileInfo(text);
-        elements.fileInfo.innerHTML =
-            `✓ <strong>${file.name}</strong><br>
-            Size: ${formatBytes(info.totalSize)}, Blocks: ${info.blocks}, Range: ${info.startAddress} - ${info.endAddress}`;
-        elements.fileInfo.classList.add('loaded');
+        elements.hexLabel.textContent = `${file.name} — ${formatBytes(info.totalSize)}, ${info.blocks} blocks`;
         showStatus('HEX file loaded successfully');
         updateFlashButton();
         log(`Loaded ${file.name}: ${formatBytes(info.totalSize)}`);
@@ -176,9 +177,7 @@ async function loadHexForDevice() {
 
         const info = getHexFileInfo(text);
         const fileName = path.split('/').pop();
-        elements.fileInfo.innerHTML =
-            `✓ <strong>${fileName}</strong> &mdash; ${formatBytes(info.totalSize)}, ${info.blocks} blocks`;
-        elements.fileInfo.classList.add('loaded');
+        elements.hexLabel.textContent = fileName;
 
         log(`Start program loaded: ${fileName} (${formatBytes(info.totalSize)})`);
         updateFlashButton();
@@ -221,7 +220,7 @@ async function connectDevice() {
         log('Device ready for flashing');
 
         updatePartialFlashUI();
-        if (!hexFileContent) await loadHexForDevice();
+        if (hexIsStartProgram) await loadHexForDevice();
 
         if (autoFlashEnabled && hexFileContent) {
             showStatus('Auto-flash: starting...');
@@ -341,14 +340,7 @@ function onConnectionChanged(connected) {
         elements.deviceStatus.classList.remove('connected');
         elements.firmwareVersion.textContent = '-';
         flashController = null;
-        // Only clear the hex if it was the auto-loaded start program.
-        // Custom files loaded by the user are kept across reconnects.
-        if (hexIsStartProgram) {
-            hexFileContent = null;
-            hexIsStartProgram = false;
-            elements.fileInfo.textContent = '';
-            elements.fileInfo.classList.remove('loaded');
-        }
+        // Hex selection (custom file or start program) persists across disconnects.
         // Re-enable partial flash checkbox so it's ready for the next device
         elements.partialFlash.disabled = false;
         elements.partialFlash.title = '';
@@ -420,7 +412,7 @@ async function onDeviceAppeared(device) {
         flashController = createFlashController(usbDevice);
         elements.firmwareVersion.textContent = 'Ready';
         updatePartialFlashUI();
-        if (!hexFileContent) await loadHexForDevice();
+        if (hexIsStartProgram) await loadHexForDevice();
         updateFlashButton();
 
         if (autoFlashEnabled && hexFileContent) {
